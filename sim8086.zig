@@ -101,27 +101,29 @@ fn decodeRegister(w: bool, enc_3_bits: u8) Register {
     }
 }
 
-fn decode(file: std.fs.File, allocator: std.mem.Allocator) ![]Instr {
+fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
     var result = std.ArrayList(Instr).init(allocator);
     defer result.deinit();
 
-    var reader = file.reader();
-
     while (true) {
-        const first_byte = reader.readByte() catch |err| {
-            if (err == error.EndOfStream) {
-                break;
-            } else {
-                return err;
-            }
-        };
+        var buf1: [1]u8 = undefined;
+        var amt_read = try reader.read(&buf1);
+        if (amt_read < 1) {
+            break;
+        }
+
+        const first_byte = buf1[0];
         const op = try determineOp(first_byte);
         switch (op) {
             .mov => {
                 const d = first_byte & 0b10 == 0b10;
                 const w = first_byte & 0b1 == 0b1;
 
-                const second_byte = try reader.readByte();
+                amt_read = try reader.read(&buf1);
+                if (amt_read < 1) {
+                    return error.UnexpectedEndOfData;
+                }
+                const second_byte = buf1[0];
 
                 const mod = (second_byte & 0b1100_0000) >> 6;
                 if (mod != 0b11) {
@@ -154,7 +156,7 @@ pub fn main() !void {
     const file = if (file_path) |value| try std.fs.cwd().openFile(value, .{ .mode = .read_only }) else std.io.getStdIn();
     defer file.close();
 
-    const instructions = try decode(file, allocator);
+    const instructions = try decode(file.reader(), allocator);
     defer allocator.free(instructions);
 
     const stdout = std.io.getStdOut().writer();
@@ -165,10 +167,22 @@ pub fn main() !void {
     }
 }
 
-test "format" {
+test "format instruction" {
     const allocator = std.testing.allocator;
     const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ax }, .arg2 = .{ .register = .bx } } } };
     const str = try std.fmt.allocPrint(allocator, "{}", .{instr});
     defer allocator.free(str);
     try expectEqualStrings(str, "mov ax, bx");
+}
+
+test "decode mov" {
+    const data = "\x89\xd9\x88\xe5";
+    const allocator = std.testing.allocator;
+    var file = std.io.fixedBufferStream(data);
+    const instrs = try decode(&file, allocator);
+    defer allocator.free(instrs);
+    try expectEqualDeep(instrs, &[_]Instr{
+        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .cx }, .arg2 = .{ .register = .bx } } } },
+        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ch }, .arg2 = .{ .register = .ah } } } },
+    });
 }
