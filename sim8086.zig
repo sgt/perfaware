@@ -160,6 +160,9 @@ pub fn main() !void {
     defer allocator.free(instructions);
 
     const stdout = std.io.getStdOut().writer();
+    if (file_path) |value| {
+        try stdout.print("; {s} disassembly:\n", .{value});
+    }
     try stdout.print("bits 16\n\n", .{});
 
     for (instructions) |instr| {
