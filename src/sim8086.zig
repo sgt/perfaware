@@ -89,24 +89,16 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
     defer result.deinit();
 
     while (true) {
-        var buf1: [1]u8 = undefined;
-        var amt_read = try reader.read(&buf1);
-        if (amt_read < 1) {
-            break;
-        }
+        // read next byte or bail on eof
+        const first_byte = reader.readByte() catch break;
 
-        const first_byte = buf1[0];
         const op = try determineOp(first_byte);
         switch (op) {
             .mov => {
                 const d = util.isBitSet(first_byte, 1);
                 const w = util.isBitSet(first_byte, 0);
 
-                amt_read = try reader.read(&buf1);
-                if (amt_read < 1) {
-                    return error.UnexpectedEndOfData;
-                }
-                const second_byte = buf1[0];
+                const second_byte = try reader.readByte();
 
                 const mod = (second_byte & 0b1100_0000) >> 6;
                 if (mod != 0b11) {
@@ -164,7 +156,8 @@ test "format instruction" {
 test "decode mov" {
     const data = "\x89\xd9\x88\xe5";
     const allocator = std.testing.allocator;
-    var reader = std.io.fixedBufferStream(data);
+    var stream = std.io.fixedBufferStream(data);
+    const reader = stream.reader();
     const instrs = try decode(&reader, allocator);
     defer allocator.free(instrs);
     try std.testing.expectEqualDeep(&[_]Instr{
