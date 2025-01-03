@@ -1,8 +1,4 @@
 const std = @import("std");
-const expect = std.testing.expect;
-const expectEqual = std.testing.expectEqual;
-const expectEqualStrings = std.testing.expectEqualStrings;
-const expectError = std.testing.expectError;
 
 /// Returns true if the first `n` bits of `value` match `match`.
 pub fn matchFirstBits(comptime T: type, value: u8, match: T) bool {
@@ -10,10 +6,8 @@ pub fn matchFirstBits(comptime T: type, value: u8, match: T) bool {
     if (bitSize > 8) {
         @compileError("cannot match more than 8 bits");
     }
-    const ones: u8 = (1 << 8) - 1;
-    const mask = ones << (8 - bitSize);
-    const compare = @as(u8, match) << (8 - bitSize);
-    return (value & mask) == compare;
+    const truncated: T = @truncate(value >> (8 - bitSize));
+    return truncated == match;
 }
 
 pub fn readBytes(comptime n: usize, reader: anytype) ![n]u8 {
@@ -30,19 +24,31 @@ pub fn readByte(reader: anytype) !u8 {
     return bytes[0];
 }
 
+pub fn isBitSet(value: u8, n: u3) bool {
+    return (value & (@as(u8, 1) << n)) != 0;
+}
+
 test "match first bits" {
-    try expect(matchFirstBits(u8, 0b1100_0111, 0b1100_0111));
-    try expect(!matchFirstBits(u8, 0b1100_0111, 0b1101_0111));
-    try expect(matchFirstBits(u3, 0b1100_0111, 0b110));
-    try expect(!matchFirstBits(u3, 0b1100_0111, 0b111));
+    const value = 0b1100_0111;
+    try std.testing.expect(matchFirstBits(u8, value, 0b1100_0111));
+    try std.testing.expect(!matchFirstBits(u8, value, 0b1101_0111));
+    try std.testing.expect(matchFirstBits(u3, value, 0b110));
+    try std.testing.expect(!matchFirstBits(u3, value, 0b111));
 }
 
 test "read bytes" {
     const data = "abcd";
     var reader = std.io.fixedBufferStream(data);
     const first_byte = try readByte(&reader);
-    try expectEqual('a', first_byte);
+    try std.testing.expectEqual('a', first_byte);
     const next_3_bytes = try readBytes(3, &reader);
-    try expectEqualStrings("bcd", &next_3_bytes);
-    try expectError(error.UnexpectedEndOfData, readByte(&reader));
+    try std.testing.expectEqualStrings("bcd", &next_3_bytes);
+    try std.testing.expectError(error.UnexpectedEndOfData, readByte(&reader));
+}
+
+test "is bit set" {
+    const value = 0b1100_0101;
+    try std.testing.expect(isBitSet(value, 0));
+    try std.testing.expect(!isBitSet(value, 1));
+    try std.testing.expect(isBitSet(value, 2));
 }

@@ -1,9 +1,4 @@
 const std = @import("std");
-const expect = std.testing.expect;
-const expectEqualDeep = std.testing.expectEqualDeep;
-const expectEqualStrings = std.testing.expectEqualStrings;
-const BitReader = std.io.BitReader;
-
 const util = @import("util.zig");
 
 const Op = enum {
@@ -76,32 +71,17 @@ fn determineOp(byte: u8) !Op {
     };
 }
 
-fn decodeRegister(w: bool, enc_3_bits: u8) Register {
-    if (!w) {
-        return switch (enc_3_bits) {
-            0b000 => .al,
-            0b001 => .cl,
-            0b010 => .dl,
-            0b011 => .bl,
-            0b100 => .ah,
-            0b101 => .ch,
-            0b110 => .dh,
-            0b111 => .bh,
-            else => unreachable,
-        };
-    } else {
-        return switch (enc_3_bits) {
-            0b000 => .ax,
-            0b001 => .cx,
-            0b010 => .dx,
-            0b011 => .bx,
-            0b100 => .sp,
-            0b101 => .bp,
-            0b110 => .si,
-            0b111 => .di,
-            else => unreachable,
-        };
-    }
+fn decodeRegister(w: bool, encoding: u3) Register {
+    return switch (encoding) {
+        0b000 => if (w) .ax else .al,
+        0b001 => if (w) .cx else .cl,
+        0b010 => if (w) .dx else .dl,
+        0b011 => if (w) .bx else .bl,
+        0b100 => if (w) .sp else .ah,
+        0b101 => if (w) .bp else .ch,
+        0b110 => if (w) .si else .dh,
+        0b111 => if (w) .di else .bh,
+    };
 }
 
 fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
@@ -119,8 +99,8 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
         const op = try determineOp(first_byte);
         switch (op) {
             .mov => {
-                const d = first_byte & 0b10 == 0b10;
-                const w = first_byte & 0b1 == 0b1;
+                const d = util.isBitSet(first_byte, 1);
+                const w = util.isBitSet(first_byte, 0);
 
                 amt_read = try reader.read(&buf1);
                 if (amt_read < 1) {
@@ -133,8 +113,8 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
                     return error.UnsupportedOpVariant;
                 }
 
-                const reg: u8 = (second_byte & 0b0011_1000) >> 3;
-                const rm: u8 = second_byte & 0b0000_0111;
+                const reg: u3 = @truncate(second_byte >> 3);
+                const rm: u3 = @truncate(second_byte);
 
                 const param1 = OpArg{ .register = decodeRegister(w, reg) };
                 const param2 = OpArg{ .register = decodeRegister(w, rm) };
@@ -178,7 +158,7 @@ test "format instruction" {
     const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ax }, .arg2 = .{ .register = .bx } } } };
     const str = try std.fmt.allocPrint(allocator, "{}", .{instr});
     defer allocator.free(str);
-    try expectEqualStrings("mov ax, bx", str);
+    try std.testing.expectEqualStrings("mov ax, bx", str);
 }
 
 test "decode mov" {
@@ -187,7 +167,7 @@ test "decode mov" {
     var reader = std.io.fixedBufferStream(data);
     const instrs = try decode(&reader, allocator);
     defer allocator.free(instrs);
-    try expectEqualDeep(&[_]Instr{
+    try std.testing.expectEqualDeep(&[_]Instr{
         Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .cx }, .arg2 = .{ .register = .bx } } } },
         Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ch }, .arg2 = .{ .register = .ah } } } },
     }, instrs);
