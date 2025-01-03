@@ -4,6 +4,8 @@ const expectEqualDeep = std.testing.expectEqualDeep;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const BitReader = std.io.BitReader;
 
+const util = @import("util.zig");
+
 const Op = enum {
     mov,
 };
@@ -176,17 +178,21 @@ test "format instruction" {
     const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ax }, .arg2 = .{ .register = .bx } } } };
     const str = try std.fmt.allocPrint(allocator, "{}", .{instr});
     defer allocator.free(str);
-    try expectEqualStrings(str, "mov ax, bx");
+    try expectEqualStrings("mov ax, bx", str);
 }
 
 test "decode mov" {
     const data = "\x89\xd9\x88\xe5";
     const allocator = std.testing.allocator;
-    var file = std.io.fixedBufferStream(data);
-    const instrs = try decode(&file, allocator);
+    var reader = std.io.fixedBufferStream(data);
+    const instrs = try decode(&reader, allocator);
     defer allocator.free(instrs);
-    try expectEqualDeep(instrs, &[_]Instr{
+    try expectEqualDeep(&[_]Instr{
         Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .cx }, .arg2 = .{ .register = .bx } } } },
         Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ch }, .arg2 = .{ .register = .ah } } } },
-    });
+    }, instrs);
+}
+
+test {
+    _ = util;
 }
