@@ -25,13 +25,21 @@ const Register = enum {
 };
 
 const OpArg = union(enum) {
-    register: Register,
+    reg: Register,
+    addrOneReg: Register,
+    addrOneRegD8: struct { reg: Register, d8: u8 },
+    addrOneRegD16: struct { reg: Register, d16: u16 },
+    addrTwoRegs: struct { reg1: Register, reg2: Register },
+    addrTwoRegsD8: struct { reg1: Register, reg2: Register, d8: u8 },
+    addrTwoRegsD16: struct { reg1: Register, reg2: Register, d16: u16 },
+    // TODO: direct address variant
 
     pub fn format(self: OpArg, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
-            .register => |reg| {
+            .reg => |reg| {
                 try writer.writeAll(@tagName(reg));
             },
+            else => unreachable,
         }
     }
 };
@@ -63,12 +71,77 @@ const Instr = struct {
     }
 };
 
-fn determineOp(byte: u8) !Op {
-    const first_6_bits = byte & 0b1111_1100;
-    return switch (first_6_bits) {
-        0b1000_1000 => .mov,
-        else => error.UnknownOp,
-    };
+/// MOV register/memory to/from register.
+fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
+    const d = util.isBitSet(first_byte, 1);
+    const w = util.isBitSet(first_byte, 0);
+
+    const second_byte = try reader.readByte();
+
+    const mod = (second_byte & 0b1100_0000) >> 6;
+    if (mod != 0b11) {
+        return error.UnsupportedOpVariant;
+    }
+
+    const reg: u3 = @truncate(second_byte >> 3);
+    const rm: u3 = @truncate(second_byte);
+
+    const param1 = OpArg{ .reg = decodeRegister(w, reg) };
+    const param2 = OpArg{ .reg = decodeRegister(w, rm) };
+
+    const op_args = if (d) OpArgs{ .two = .{ .arg1 = param1, .arg2 = param2 } } else OpArgs{ .two = .{ .arg1 = param2, .arg2 = param1 } };
+    return .{ .op = .mov, .op_args = op_args };
+}
+
+/// MOV Immediate to register/memory.
+fn opMovImmediateToRegMem(_: u8, _: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+/// MOV Immediate to register.
+fn opMovImmediateToReg(_: u8, _: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+/// MOV Memory to accumulator.
+fn opMovMemToAcc(_: u8, _: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+/// MOV Accumulator to memory.
+fn opMovAccToMem(_: u8, _: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+/// MOV register/memory to/from segment register.
+fn opMovRegMemToSegReg(_: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+/// MOV segment register to/from register/memory.
+fn opMovSegRegToRegMem(_: anytype) !Instr {
+    return error.NotImplemented;
+}
+
+fn decodeNextInstr(reader: anytype) !Instr {
+    const first_byte = try reader.readByte();
+    if (util.startsWithBits(first_byte, u6, 0b1000_10)) {
+        return opMovRegFromRegMem(first_byte, reader);
+    } else if (util.startsWithBits(first_byte, u7, 0b1100_011)) {
+        return opMovImmediateToRegMem(first_byte, reader);
+    } else if (util.startsWithBits(first_byte, u4, 0b1011)) {
+        return opMovImmediateToReg(first_byte, reader);
+    } else if (util.startsWithBits(first_byte, u7, 0b1010_000)) {
+        return opMovMemToAcc(first_byte, reader);
+    } else if (util.startsWithBits(first_byte, u7, 0b1010_001)) {
+        return opMovAccToMem(first_byte, reader);
+    } else if (first_byte == 0b1000_1110) {
+        return opMovRegMemToSegReg(reader);
+    } else if (first_byte == 0b1000_1100) {
+        return opMovSegRegToRegMem(reader);
+    } else {
+        return error.UnknownOp;
+    }
 }
 
 fn decodeRegister(w: bool, encoding: u3) Register {
@@ -89,33 +162,11 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
     defer result.deinit();
 
     while (true) {
-        // read next byte or bail on eof
-        const first_byte = reader.readByte() catch break;
-
-        const op = try determineOp(first_byte);
-        switch (op) {
-            .mov => {
-                const d = util.isBitSet(first_byte, 1);
-                const w = util.isBitSet(first_byte, 0);
-
-                const second_byte = try reader.readByte();
-
-                const mod = (second_byte & 0b1100_0000) >> 6;
-                if (mod != 0b11) {
-                    return error.UnsupportedOpVariant;
-                }
-
-                const reg: u3 = @truncate(second_byte >> 3);
-                const rm: u3 = @truncate(second_byte);
-
-                const param1 = OpArg{ .register = decodeRegister(w, reg) };
-                const param2 = OpArg{ .register = decodeRegister(w, rm) };
-
-                const op_args = if (d) OpArgs{ .two = .{ .arg1 = param1, .arg2 = param2 } } else OpArgs{ .two = .{ .arg1 = param2, .arg2 = param1 } };
-                const instr = Instr{ .op = op, .op_args = op_args };
-                try result.append(instr);
-            },
-        }
+        const instr = decodeNextInstr(reader) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        try result.append(instr);
     }
 
     return result.toOwnedSlice();
@@ -147,7 +198,7 @@ pub fn main() !void {
 
 test "format instruction" {
     const allocator = std.testing.allocator;
-    const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ax }, .arg2 = .{ .register = .bx } } } };
+    const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .ax }, .arg2 = .{ .reg = .bx } } } };
     const str = try std.fmt.allocPrint(allocator, "{}", .{instr});
     defer allocator.free(str);
     try std.testing.expectEqualStrings("mov ax, bx", str);
@@ -158,11 +209,11 @@ test "decode mov" {
     const allocator = std.testing.allocator;
     var stream = std.io.fixedBufferStream(data);
     const reader = stream.reader();
-    const instrs = try decode(&reader, allocator);
+    const instrs = try decode(reader, allocator);
     defer allocator.free(instrs);
     try std.testing.expectEqualDeep(&[_]Instr{
-        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .cx }, .arg2 = .{ .register = .bx } } } },
-        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .register = .ch }, .arg2 = .{ .register = .ah } } } },
+        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .reg = .bx } } } },
+        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .reg = .ah } } } },
     }, instrs);
 }
 
