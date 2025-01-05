@@ -26,21 +26,67 @@ const Register = enum {
 
 const OpArg = union(enum) {
     reg: Register,
-    addrOneReg: Register,
-    addrOneRegD8: struct { reg: Register, d8: u8 },
-    addrOneRegD16: struct { reg: Register, d16: u16 },
-    addrTwoRegs: struct { reg1: Register, reg2: Register },
-    addrTwoRegsD8: struct { reg1: Register, reg2: Register, d8: u8 },
-    addrTwoRegsD16: struct { reg1: Register, reg2: Register, d16: u16 },
-    // TODO: direct address variant
+    addrOneReg: struct { reg: Register, d: ?u16 },
+    addrTwoRegs: struct { reg1: Register, reg2: Register, d: ?u16 = null },
+    directAddr: u16,
+    immediate: u16,
 
     pub fn format(self: OpArg, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
             .reg => |reg| {
                 try writer.writeAll(@tagName(reg));
             },
-            else => unreachable,
+            .addrOneReg => |arg| {
+                if (arg.d) |d| {
+                    try writer.print("[{s} + {d}]", .{ @tagName(arg.reg), d });
+                } else {
+                    try writer.print("[{s}]", .{@tagName(arg.reg)});
+                }
+            },
+            .addrTwoRegs => |arg| {
+                if (arg.d) |d| {
+                    try writer.print("[{s} + {s} + {d}]", .{ @tagName(arg.reg1), @tagName(arg.reg2), d });
+                } else {
+                    try writer.print("[{s} + {s}]", .{ @tagName(arg.reg1), @tagName(arg.reg2) });
+                }
+            },
+            .directAddr => |addr| {
+                try writer.print("[{d}]", .{addr});
+            },
+            .immediate => |imm| {
+                try writer.print("{d}", .{imm});
+            },
         }
+    }
+
+    /// Decode register when MOD is 0b11.
+    fn decodeRegister(w: bool, encoding: u3) OpArg {
+        const reg: Register = switch (encoding) {
+            0b000 => if (w) .ax else .al,
+            0b001 => if (w) .cx else .cl,
+            0b010 => if (w) .dx else .dl,
+            0b011 => if (w) .bx else .bl,
+            0b100 => if (w) .sp else .ah,
+            0b101 => if (w) .bp else .ch,
+            0b110 => if (w) .si else .dh,
+            0b111 => if (w) .di else .bh,
+        };
+        return .{ .reg = reg };
+    }
+
+    /// Decode effective address when MOD is 0b00, 0b01 or 0b10.
+    fn decodeAddr(mod: u2, encoding: u3, d: ?u16) OpArg {
+        return switch (encoding) {
+            0b000 => .{ .addrTwoRegs = .{ .reg1 = .bx, .reg2 = .si, .d = d } },
+            0b001 => .{ .addrTwoRegs = .{ .reg1 = .bx, .reg2 = .di, .d = d } },
+            0b010 => .{ .addrTwoRegs = .{ .reg1 = .bp, .reg2 = .si, .d = d } },
+            0b011 => .{ .addrTwoRegs = .{ .reg1 = .bp, .reg2 = .di, .d = d } },
+            0b100 => .{ .addrOneReg = .si, .d = d },
+            0b101 => .{ .addrOneReg = .di, .d = d },
+            // TODO implement direct address
+            0b110 => if (mod == 0b00) .{ .directAddr = unreachable } else .{ .addrOneReg = .bp, .d = d },
+            0b111 => .{ .addrOneReg = .bx, .d = d },
+        };
     }
 };
 
@@ -86,15 +132,16 @@ fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
     const reg: u3 = @truncate(second_byte >> 3);
     const rm: u3 = @truncate(second_byte);
 
-    const param1 = OpArg{ .reg = decodeRegister(w, reg) };
-    const param2 = OpArg{ .reg = decodeRegister(w, rm) };
+    const arg1 = OpArg.decodeRegister(w, reg);
+    const arg2 = OpArg.decodeRegister(w, rm);
 
-    const op_args = if (d) OpArgs{ .two = .{ .arg1 = param1, .arg2 = param2 } } else OpArgs{ .two = .{ .arg1 = param2, .arg2 = param1 } };
+    const op_args = if (d) .{ .two = .{ .arg1 = arg1, .arg2 = arg2 } } else .{ .two = .{ .arg1 = arg2, .arg2 = arg1 } };
     return .{ .op = .mov, .op_args = op_args };
 }
 
 /// MOV Immediate to register/memory.
 fn opMovImmediateToRegMem(_: u8, _: anytype) !Instr {
+    // const w = util.isBitSet(first_byte, 0);
     return error.NotImplemented;
 }
 
@@ -144,19 +191,6 @@ fn decodeNextInstr(reader: anytype) !Instr {
     }
 }
 
-fn decodeRegister(w: bool, encoding: u3) Register {
-    return switch (encoding) {
-        0b000 => if (w) .ax else .al,
-        0b001 => if (w) .cx else .cl,
-        0b010 => if (w) .dx else .dl,
-        0b011 => if (w) .bx else .bl,
-        0b100 => if (w) .sp else .ah,
-        0b101 => if (w) .bp else .ch,
-        0b110 => if (w) .si else .dh,
-        0b111 => if (w) .di else .bh,
-    };
-}
-
 fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
     var result = std.ArrayList(Instr).init(allocator);
     defer result.deinit();
@@ -173,7 +207,9 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
 }
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.skip();
@@ -192,31 +228,47 @@ pub fn main() !void {
     try stdout.print("bits 16\n\n", .{});
 
     for (instructions) |instr| {
-        try stdout.print("{}\n", .{instr});
+        try stdout.print("{s}\n", .{instr});
     }
 }
 
 test "format instruction" {
     const allocator = std.testing.allocator;
-    const instr = Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .ax }, .arg2 = .{ .reg = .bx } } } };
+    const instr = Instr{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ax }, .arg2 = .{ .reg = .bx } } } };
     const str = try std.fmt.allocPrint(allocator, "{}", .{instr});
     defer allocator.free(str);
     try std.testing.expectEqualStrings("mov ax, bx", str);
 }
 
-test "decode mov" {
-    const data = "\x89\xd9\x88\xe5";
+fn testDecoder(comptime data: []const u8, comptime expected: []const Instr) !void {
     const allocator = std.testing.allocator;
     var stream = std.io.fixedBufferStream(data);
     const reader = stream.reader();
     const instrs = try decode(reader, allocator);
     defer allocator.free(instrs);
-    try std.testing.expectEqualDeep(&[_]Instr{
-        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .reg = .bx } } } },
-        Instr{ .op = .mov, .op_args = OpArgs{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .reg = .ah } } } },
-    }, instrs);
+    try std.testing.expectEqualDeep(expected, instrs);
+}
+
+test "decode mov reg to reg" {
+    const data = "\x89\xd9\x88\xe5";
+    const expected = .{
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .reg = .bx } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .reg = .ah } } } },
+    };
+    try testDecoder(data, &expected);
+}
+
+test "decode mov immediate to reg" {
+    const data = "\xb1\x0c\xb5\xf4\xb9\x0c\x00\xb9\xf4\xff";
+    const expected = .{
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cl }, .arg2 = .{ .immediate = 0x0c } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .immediate = 0xf4 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate = 0x0c } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate = 0xfff4 } } } },
+    };
+    try testDecoder(data, &expected);
 }
 
 test {
-    _ = util;
+    std.testing.refAllDecls(@This());
 }
