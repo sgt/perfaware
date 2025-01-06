@@ -25,6 +25,6 @@ test "match first bits" {
 test "is bit set" {
     const value = 0b1100_0101;
     try std.testing.expect(isBitSet(value, 0));
-    try std.testing.expect(isBitSet(value, 1));
+    try std.testing.expect(!isBitSet(value, 1));
     try std.testing.expect(isBitSet(value, 2));
 }
