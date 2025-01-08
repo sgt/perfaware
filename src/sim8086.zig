@@ -5,31 +5,17 @@ const Op = enum {
     mov,
 };
 
-const Register = enum {
-    al,
-    bl,
-    cl,
-    dl,
-    ah,
-    bh,
-    ch,
-    dh,
-    ax,
-    bx,
-    cx,
-    dx,
-    sp,
-    bp,
-    si,
-    di,
-};
+// zig fmt: off
+const Register = enum { al, bl, cl, dl, ah, bh, ch, dh, ax, bx, cx, dx, sp, bp, si, di, };
+// zig fmt: on
 
 const OpArg = union(enum) {
     reg: Register,
-    addr_one_reg: struct { reg: Register, d: ?i16 },
-    addr_two_regs: struct { reg1: Register, reg2: Register, d: ?i16 = null },
+    addr_one_reg: struct { reg: Register, d: i16 = 0 },
+    addr_two_regs: struct { reg1: Register, reg2: Register, d: i16 = 0 },
     direct_addr: u16,
-    immediate: i16,
+    immediate8: i8,
+    immediate16: i16,
 
     pub fn format(self: OpArg, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
@@ -38,30 +24,29 @@ const OpArg = union(enum) {
             },
             .addr_one_reg => |arg| {
                 try writer.print("[{s}", .{@tagName(arg.reg)});
-                if (arg.d) |d| {
-                    if (d > 0) {
-                        try writer.print(" + {d}", .{d});
-                    } else if (d < 0) {
-                        try writer.print(" - {d}", .{-d});
-                    }
+                if (arg.d > 0) {
+                    try writer.print(" + {d}", .{arg.d});
+                } else if (arg.d < 0) {
+                    try writer.print(" - {d}", .{-arg.d});
                 }
                 try writer.writeAll("]");
             },
             .addr_two_regs => |arg| {
                 try writer.print("[{s} + {s}", .{ @tagName(arg.reg1), @tagName(arg.reg2) });
-                if (arg.d) |d| {
-                    if (d > 0) {
-                        try writer.print(" + {d}", .{d});
-                    } else if (d < 0) {
-                        try writer.print(" - {d}", .{-d});
-                    }
+                if (arg.d > 0) {
+                    try writer.print(" + {d}", .{arg.d});
+                } else if (arg.d < 0) {
+                    try writer.print(" - {d}", .{-arg.d});
                 }
                 try writer.writeAll("]");
             },
             .direct_addr => |addr| {
                 try writer.print("[{d}]", .{addr});
             },
-            .immediate => |imm| {
+            .immediate8 => |imm| {
+                try writer.print("{d}", .{imm});
+            },
+            .immediate16 => |imm| {
                 try writer.print("{d}", .{imm});
             },
         }
@@ -86,13 +71,13 @@ const OpArg = union(enum) {
     fn decodeAddr(comptime T: type, mod: u2, encoding: u3, addr_bits: ?T) OpArg {
         if (T != u8 and T != u16) @compileError("addr_bits type must be u8 or u16");
 
-        const signedD: ?i16 = if (addr_bits) |addr| block: {
+        const signedD: i16 = if (addr_bits) |addr| block: {
             switch (T) {
                 u8 => break :block @as(i8, @bitCast(addr)),
                 u16 => break :block @bitCast(addr),
                 else => unreachable,
             }
-        } else null;
+        } else 0;
 
         return switch (encoding) {
             0b000 => .{ .addr_two_regs = .{ .reg1 = .bx, .reg2 = .si, .d = signedD } },
@@ -152,7 +137,6 @@ fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
     const w = util.isBitSet(first_byte, 0);
 
     const second_byte = try reader.readByte();
-
     const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
     const reg: u3 = @truncate(second_byte >> 3);
     const regmem: u3 = @truncate(second_byte);
@@ -166,18 +150,27 @@ fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
 
 /// MOV Immediate to register/memory.
 fn opMovImmediateToRegMem(_: u8, _: anytype) !Instr {
-    // const w = util.isBitSet(first_byte, 0);
+    // fn opMovImmediateToRegMem(first_byte: u8, reader: anytype) !Instr {
     return error.NotImplemented;
+    // const w = util.isBitSet(first_byte, 0);
+
+    // const second_byte = try reader.readByte();
+    // const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
+    // const zeroes: u3 = @truncate(second_byte >> 3);
+    // if (zeroes != 0) return error.UnknownOp;
+    // const regmem: u3 = @truncate(second_byte);
+
+    // const arg1 = try OpArg.decodeRegMem(mod, w, regmem, reader);
+    // const arg2 = try OpArg.decodeAddr(
 }
 
 /// MOV Immediate to register.
 fn opMovImmediateToReg(first_byte: u8, reader: anytype) !Instr {
     const w = util.isBitSet(first_byte, 3);
     const reg: u3 = @truncate(first_byte);
-    const data: i16 = if (w) try reader.readInt(i16, .little) else try reader.readInt(i8, .little);
 
     const arg1 = OpArg.decodeRegister(w, reg);
-    const arg2 = .{ .immediate = data };
+    const arg2 = if (w) OpArg{ .immediate16 = try reader.readInt(i16, .little) } else OpArg{ .immediate8 = try reader.readInt(i8, .little) };
     return .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = arg1, .arg2 = arg2 } } };
 }
 
@@ -297,10 +290,10 @@ test "decode mov reg to reg" {
 test "decode mov immediate to reg" {
     const data = "\xb1\x0c\xb5\xf4\xb9\x0c\x00\xb9\xf4\xff";
     const expected = .{
-        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cl }, .arg2 = .{ .immediate = 12 } } } },
-        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .immediate = -12 } } } },
-        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate = 12 } } } },
-        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate = -12 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cl }, .arg2 = .{ .immediate8 = 12 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ch }, .arg2 = .{ .immediate8 = -12 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate16 = 12 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .cx }, .arg2 = .{ .immediate16 = -12 } } } },
     };
     try testDecoder(data, &expected);
 }
@@ -312,9 +305,15 @@ test "decode mov negative displacement" {
     };
     try testDecoder(data, &expected);
 }
-// 00000000  8B41DB            mov ax,[bx+di-0x25]
-// 00000003  898CD4FE          mov [si-0x12c],cx
-// 00000007  8B57E0            mov dx,[bx-0x20]
+
+// test "decode mov immediate to memory" {
+//     const data = "\xc6\x03\x07";
+//     const expected = .{
+//         .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .di } }, .arg2 = .{ .immediate8 = 7 } } } },
+//     };
+//     try testDecoder(data, &expected);
+// }
+
 // 0000000A  C60307            mov byte [bp+di],0x7
 // 0000000D  C78585035B01      mov word [di+0x385],0x15b
 // 00000013  8B2E0500          mov bp,[0x5]
