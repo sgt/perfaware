@@ -68,38 +68,25 @@ const OpArg = union(enum) {
     }
 
     /// Decode effective address when MOD is 0b00, 0b01 or 0b10.
-    fn decodeAddr(comptime T: type, mod: u2, encoding: u3, addr_bits: ?T) OpArg {
-        if (T != u8 and T != u16) @compileError("addr_bits type must be u8 or u16");
-
-        const signedD: i16 = if (addr_bits) |addr| block: {
-            switch (T) {
-                u8 => break :block @as(i8, @bitCast(addr)),
-                u16 => break :block @bitCast(addr),
-                else => unreachable,
-            }
-        } else 0;
-
-        return switch (encoding) {
-            0b000 => .{ .addr_two_regs = .{ .reg1 = .bx, .reg2 = .si, .d = signedD } },
-            0b001 => .{ .addr_two_regs = .{ .reg1 = .bx, .reg2 = .di, .d = signedD } },
-            0b010 => .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .si, .d = signedD } },
-            0b011 => .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .di, .d = signedD } },
-            0b100 => .{ .addr_one_reg = .{ .reg = .si, .d = signedD } },
-            0b101 => .{ .addr_one_reg = .{ .reg = .di, .d = signedD } },
-            0b110 => block: {
-                const unsignedD: u16 = if (addr_bits) |addr| @intCast(addr) else unreachable;
-                break :block if (mod == 0b00) .{ .direct_addr = unsignedD } else .{ .addr_one_reg = .{ .reg = .bp, .d = signedD } };
-            },
-            0b111 => .{ .addr_one_reg = .{ .reg = .bx, .d = signedD } },
+    fn decodeAddr(reg_mem: u3, d: i16) OpArg {
+        return switch (reg_mem) {
+            0b000 => .{ .addr_two_regs = .{ .reg1 = .bx, .reg2 = .si, .d = d } },
+            0b001 => .{ .addr_two_regs = .{ .reg1 = .bx, .reg2 = .di, .d = d } },
+            0b010 => .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .si, .d = d } },
+            0b011 => .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .di, .d = d } },
+            0b100 => .{ .addr_one_reg = .{ .reg = .si, .d = d } },
+            0b101 => .{ .addr_one_reg = .{ .reg = .di, .d = d } },
+            0b110 => unreachable,
+            0b111 => .{ .addr_one_reg = .{ .reg = .bx, .d = d } },
         };
     }
 
-    fn decodeRegMem(mod: u2, w: bool, encoding: u3, reader: anytype) !OpArg {
+    fn decodeRegMem(mod: u2, w: bool, reg_mem: u3, reader: anytype) !OpArg {
         return switch (mod) {
-            0b11 => decodeRegister(w, encoding),
-            0b00 => decodeAddr(u8, mod, encoding, null),
-            0b01 => decodeAddr(u8, mod, encoding, try reader.readInt(u8, .little)),
-            0b10 => decodeAddr(u16, mod, encoding, try reader.readInt(u16, .little)),
+            0b11 => decodeRegister(w, reg_mem),
+            0b00 => if (reg_mem == 0b110) .{ .direct_addr = try reader.readInt(u16, .little) } else decodeAddr(reg_mem, 0),
+            0b01 => decodeAddr(reg_mem, try reader.readInt(i8, .little)),
+            0b10 => decodeAddr(reg_mem, try reader.readInt(i16, .little)),
         };
     }
 };
@@ -116,7 +103,15 @@ const OpArgs = union(enum) {
                 return writer.print("{}", .{one});
             },
             .two => |two| {
-                return writer.print("{}, {}", .{ two.arg1, two.arg2 });
+                const modifier = switch (two.arg1) {
+                    .direct_addr => switch (two.arg2) {
+                        .immediate8 => " byte",
+                        .immediate16 => " word",
+                        else => "",
+                    },
+                    else => "",
+                };
+                return writer.print("{}, {s}{}", .{ two.arg1, modifier, two.arg2 });
             },
         }
     }
@@ -149,19 +144,18 @@ fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
 }
 
 /// MOV Immediate to register/memory.
-fn opMovImmediateToRegMem(_: u8, _: anytype) !Instr {
-    // fn opMovImmediateToRegMem(first_byte: u8, reader: anytype) !Instr {
-    return error.NotImplemented;
-    // const w = util.isBitSet(first_byte, 0);
+fn opMovImmediateToRegMem(first_byte: u8, reader: anytype) !Instr {
+    const w = util.isBitSet(first_byte, 0);
 
-    // const second_byte = try reader.readByte();
-    // const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
-    // const zeroes: u3 = @truncate(second_byte >> 3);
-    // if (zeroes != 0) return error.UnknownOp;
-    // const regmem: u3 = @truncate(second_byte);
+    const second_byte = try reader.readByte();
+    const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
+    const zeroes: u3 = @truncate(second_byte >> 3);
+    if (zeroes != 0) return error.UnknownOp;
+    const regmem: u3 = @truncate(second_byte);
 
-    // const arg1 = try OpArg.decodeRegMem(mod, w, regmem, reader);
-    // const arg2 = try OpArg.decodeAddr(
+    const arg1 = try OpArg.decodeRegMem(mod, w, regmem, reader);
+    const arg2 = if (w) OpArg{ .immediate16 = try reader.readInt(i16, .little) } else OpArg{ .immediate8 = try reader.readInt(i8, .little) };
+    return .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = arg1, .arg2 = arg2 } } };
 }
 
 /// MOV Immediate to register.
@@ -306,16 +300,23 @@ test "decode mov negative displacement" {
     try testDecoder(data, &expected);
 }
 
-// test "decode mov immediate to memory" {
-//     const data = "\xc6\x03\x07";
-//     const expected = .{
-//         .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .di } }, .arg2 = .{ .immediate8 = 7 } } } },
-//     };
-//     try testDecoder(data, &expected);
-// }
+test "decode mov immediate to memory" {
+    const data = "\xc6\x03\x07\xc7\x85\x85\x03\x5b\x01";
+    const expected = .{
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .addr_two_regs = .{ .reg1 = .bp, .reg2 = .di } }, .arg2 = .{ .immediate8 = 7 } } } },
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .addr_one_reg = .{ .reg = .di, .d = 901 } }, .arg2 = .{ .immediate16 = 347 } } } },
+    };
+    try testDecoder(data, &expected);
+}
 
-// 0000000A  C60307            mov byte [bp+di],0x7
-// 0000000D  C78585035B01      mov word [di+0x385],0x15b
+test "decode mov memory to register" {
+    const data = "\x8b\x2e\x05\x00";
+    const expected = .{
+        .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .bp }, .arg2 = .{ .direct_addr = 5 } } } },
+    };
+    try testDecoder(data, &expected);
+}
+
 // 00000013  8B2E0500          mov bp,[0x5]
 // 00000017  8B1E820D          mov bx,[0xd82]
 // 0000001B  A1FB09            mov ax,[0x9fb]
