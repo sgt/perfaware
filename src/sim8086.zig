@@ -128,8 +128,8 @@ const Instr = struct {
 
 /// MOV register/memory to/from register.
 fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
-    const d = util.isBitSet(first_byte, 1);
-    const w = util.isBitSet(first_byte, 0);
+    const d = util.isBitSet(1, first_byte);
+    const w = util.isBitSet(0, first_byte);
 
     const second_byte = try reader.readByte();
     const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
@@ -145,7 +145,7 @@ fn opMovRegFromRegMem(first_byte: u8, reader: anytype) !Instr {
 
 /// MOV Immediate to register/memory.
 fn opMovImmediateToRegMem(first_byte: u8, reader: anytype) !Instr {
-    const w = util.isBitSet(first_byte, 0);
+    const w = util.isBitSet(0, first_byte);
 
     const second_byte = try reader.readByte();
     const mod: u2 = @truncate((second_byte & 0b1100_0000) >> 6);
@@ -160,7 +160,7 @@ fn opMovImmediateToRegMem(first_byte: u8, reader: anytype) !Instr {
 
 /// MOV Immediate to register.
 fn opMovImmediateToReg(first_byte: u8, reader: anytype) !Instr {
-    const w = util.isBitSet(first_byte, 3);
+    const w = util.isBitSet(3, first_byte);
     const reg: u3 = @truncate(first_byte);
 
     const arg1 = OpArg.decodeRegister(w, reg);
@@ -170,14 +170,14 @@ fn opMovImmediateToReg(first_byte: u8, reader: anytype) !Instr {
 
 /// MOV Memory to accumulator.
 fn opMovMemToAcc(first_byte: u8, reader: anytype) !Instr {
-    const w = util.isBitSet(first_byte, 0);
+    const w = util.isBitSet(0, first_byte);
     const addr = if (w) try reader.readInt(u16, .little) else try reader.readInt(u8, .little);
     return .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .reg = .ax }, .arg2 = .{ .direct_addr = addr } } } };
 }
 
 /// MOV Accumulator to memory.
 fn opMovAccToMem(first_byte: u8, reader: anytype) !Instr {
-    const w = util.isBitSet(first_byte, 0);
+    const w = util.isBitSet(0, first_byte);
     const addr = if (w) try reader.readInt(u16, .little) else try reader.readInt(u8, .little);
     return .{ .op = .mov, .op_args = .{ .two = .{ .arg1 = .{ .direct_addr = addr }, .arg2 = .{ .reg = .ax } } } };
 }
@@ -194,19 +194,19 @@ fn opMovSegRegToRegMem(_: anytype) !Instr {
 
 fn decodeNextInstr(reader: anytype) !Instr {
     const first_byte = try reader.readByte();
-    if (util.startsWithBits(first_byte, u6, 0b1000_10)) {
+    if (util.startsWithBits(u6, 0b1000_10, first_byte)) {
         return opMovRegFromRegMem(first_byte, reader);
     }
-    if (util.startsWithBits(first_byte, u7, 0b1100_011)) {
+    if (util.startsWithBits(u7, 0b1100_011, first_byte)) {
         return opMovImmediateToRegMem(first_byte, reader);
     }
-    if (util.startsWithBits(first_byte, u4, 0b1011)) {
+    if (util.startsWithBits(u4, 0b1011, first_byte)) {
         return opMovImmediateToReg(first_byte, reader);
     }
-    if (util.startsWithBits(first_byte, u7, 0b1010_000)) {
+    if (util.startsWithBits(u7, 0b1010_000, first_byte)) {
         return opMovMemToAcc(first_byte, reader);
     }
-    if (util.startsWithBits(first_byte, u7, 0b1010_001)) {
+    if (util.startsWithBits(u7, 0b1010_001, first_byte)) {
         return opMovAccToMem(first_byte, reader);
     }
     if (first_byte == 0b1000_1110) {
