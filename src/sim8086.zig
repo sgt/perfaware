@@ -220,7 +220,6 @@ fn decodeNextInstr(reader: anytype) !Instr {
 
 fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
     var result = std.ArrayList(Instr).init(allocator);
-    defer result.deinit();
 
     while (true) {
         const instr = decodeNextInstr(reader) catch |err| switch (err) {
@@ -235,18 +234,21 @@ fn decode(reader: anytype, allocator: std.mem.Allocator) ![]Instr {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const ally = arena.allocator();
+
+    var args = try std.process.argsWithAllocator(ally);
     _ = args.skip();
 
     const file_path = args.next();
     const file = if (file_path) |value| try std.fs.cwd().openFile(value, .{ .mode = .read_only }) else std.io.getStdIn();
     defer file.close();
 
-    const instructions = try decode(file.reader(), allocator);
-    defer allocator.free(instructions);
+    const instructions = try decode(file.reader(), ally);
 
     const stdout = std.io.getStdOut().writer();
     if (file_path) |value| {
